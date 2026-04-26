@@ -1,0 +1,13 @@
+{
+  "name": "@provus/basic-flow",
+  "version": "0.1.0",
+  "description": "Provus end-to-end demo — provision, attest, query, verify",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "node demo.mjs"
+  },
+  "dependencies": {
+    "@provus/core": "*"
+  }
+}
