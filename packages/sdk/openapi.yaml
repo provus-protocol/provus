@@ -1,0 +1,1502 @@
+openapi: 3.1.0
+
+info:
+  title: Provus SDK
+  version: 0.1.0
+  description: |
+    **Agent identity, attestation & reputation protocol.**
+    VeritasMesh — the decentralized attester network it operates over.
+
+    The Provus SDK exposes three surfaces over HTTP, each with a distinct consumer:
+
+    | Surface | Consumer | Purpose |
+    |---------|----------|---------|
+    | **Runtime** | Agent runtimes | Identity lifecycle, attestation hooks, scope enforcement, incident recording |
+    | **Operator** | Fleet operators | Agent management, attestation coverage, incident response |
+    | **Query** | Relying parties | Trust resolution, attestation verification, lineage |
+
+    ---
+
+    ### Protocol guarantees
+    - **Attribution** — every registered agent action traces to a key, which traces to a provisioning event
+    - **Tamper-evidence** — published records cannot be silently modified, only superseded by signed follow-on records
+    - **Expiry** — no trust assertion is permanent; all carry TTLs
+    - **Sovereignty** — relying parties compute their own trust decisions; no central authority can compel a trust grant
+
+    ### Protocol non-guarantees
+    - **Correctness** — attestations reflect what the attester issued, not ground truth
+    - **Safety** — Provus is an evidence layer, not a safety layer
+    - **Real-time** — trust queries reflect last-known mesh state, which has propagation latency
+
+    ---
+
+    **GitHub:** https://github.com/provus-protocol/provus
+    **TSD:** `docs/architecture/` in the repository
+
+  contact:
+    name: Provus Protocol
+    url: https://github.com/provus-protocol/provus
+
+  license:
+    name: MIT
+    url: https://github.com/provus-protocol/provus/blob/main/LICENSE
+
+servers:
+  - url: http://localhost:3000
+    description: Local development (PoC mode — in-memory VeritasMesh)
+  - url: https://sdk.provus.network
+    description: Production (coming — VeritasMesh mainnet)
+
+tags:
+  - name: Runtime — Identity
+    description: |
+      Agent identity lifecycle. **TSD §4.1, §7.1.**
+      Mandatory surface — a compliant agent runtime must implement all identity hooks.
+      An agent that acts before `provision` completes is invisible to the trust layer.
+  - name: Runtime — Attestation
+    description: |
+      Attestation request and status. **TSD §4.2, §7.1.**
+      Pull-based — the agent/operator requests; the mesh routes to a credentialed attester.
+  - name: Runtime — Scope
+    description: |
+      Scope enforcement. **TSD §7.1.**
+      `scope/check` is a synchronous gate — not advisory, not logged-only.
+      If it returns `denied`, the action does not execute.
+  - name: Runtime — Incident
+    description: |
+      Incident recording. **TSD §4.4, §7.1.**
+      Must be callable from outside the agent process.
+      A compromised agent cannot be trusted to self-report.
+  - name: Operator
+    description: |
+      Fleet management, attestation coverage, incident response. **TSD §7.2.**
+      Silent attestation expiry is a critical operational risk — use `coverage` regularly.
+  - name: Query
+    description: |
+      Trust resolution, verification, lineage. **TSD §7.3.**
+      The relying party is sovereign — the SDK provides evidence, not verdicts.
+      `policyWeights` is the relying party's own scoring function.
+
+# ── PATHS ──────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── HEALTH ──────────────────────────────────────────────────────────────────
+
+  /:
+    get:
+      summary: SDK info
+      description: Returns SDK version, surface index, and network status.
+      operationId: getInfo
+      responses:
+        '200':
+          description: SDK information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SDKInfo'
+
+  /health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  # ── RUNTIME — IDENTITY ───────────────────────────────────────────────────────
+
+  /identity/provision:
+    post:
+      tags: [Runtime — Identity]
+      summary: Provision agent identity
+      operationId: provisionAgent
+      description: |
+        Creates a new agent identity and issues a Provenance Certificate.
+
+        **TSD §4.1:** *"The first act must be key generation and identity registration.
+        An agent that acts before it has a registered identity is invisible to the trust layer."*
+
+        The response includes the agent's `privateKey`. Store it securely —
+        the SDK does not retain private keys. This is by design (TSD §7.4).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProvisionRequest'
+            example:
+              orchestratorId: my-orchestrator-v1
+              capabilityScope:
+                - filesystem:read
+                - llm:inference
+                - network:http:get
+              intendedScope: Code review and analysis agent
+              mode: orchestrator
+      responses:
+        '201':
+          description: Agent provisioned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /identity/{agentId}:
+    get:
+      tags: [Runtime — Identity]
+      summary: Get agent identity
+      operationId: getAgent
+      parameters:
+        - $ref: '#/components/parameters/agentId'
+      responses:
+        '200':
+          description: Agent identity record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  identity:
+                    $ref: '#/components/schemas/AgentIdentity'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /identity/{agentId}/terminate:
+    post:
+      tags: [Runtime — Identity]
+      summary: Terminate agent identity
+      operationId: terminateAgent
+      description: |
+        Marks the agent as terminated (operational decommission).
+
+        **TSD §7.1:** *"Not revocation — termination is an operational fact.
+        A terminated agent's record persists and remains queryable."*
+
+        Termination ≠ Revocation. Revocation is a trust judgment made by the
+        governance layer. Termination is an operational decision made by the operator.
+      parameters:
+        - $ref: '#/components/parameters/agentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  example: Agent decommissioned after task completion
+      responses:
+        '200':
+          description: Agent terminated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── RUNTIME — ATTESTATION ────────────────────────────────────────────────────
+
+  /attest/request:
+    post:
+      tags: [Runtime — Attestation]
+      summary: Request attestation
+      operationId: requestAttestation
+      description: |
+        Submits an attestation request for a specific claim about an agent.
+
+        **TSD §4.2:** *"Pull-based — the agent/operator requests attestation.
+        Attesters do not proactively scan and endorse."*
+
+        The `evidence` field accepts any JSON object. It is content-addressed
+        (SHA-256) — the evidence artifact is referenced, not embedded.
+        This keeps attestation records lightweight regardless of evidence size.
+
+        In the PoC: auto-issued via the default Tier 2 attester.
+        In production: routed to a credentialed VeritasMesh attester by tier and domain.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttestationRequest'
+            example:
+              subjectAgentId: "a3f8c2d1e4b7..."
+              claimType: behavior
+              domain: operational_behavior
+              evidence:
+                evaluationType: operational_behavior_audit
+                tasksEvaluated: 47
+                scopeViolations: 0
+                taskCompletionRate: 0.979
+              targetTier: 2
+              requestedConfidence: 0.8
+      responses:
+        '201':
+          description: Attestation issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttestationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attest/status/{requestId}:
+    get:
+      tags: [Runtime — Attestation]
+      summary: Get attestation request status
+      operationId: getAttestationStatus
+      description: |
+        **TSD §7.1:** Returns `pending | issued | declined | expired`.
+        Runtimes should poll this after submitting a request.
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Request status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttestationStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attest/list/{agentId}:
+    get:
+      tags: [Runtime — Attestation]
+      summary: List agent attestations
+      operationId: listAttestations
+      description: |
+        Returns all attestations for an agent, including active and revoked.
+        **TSD §7.1:** Runtimes should call this on startup to warm their local cache.
+      parameters:
+        - $ref: '#/components/parameters/agentId'
+      responses:
+        '200':
+          description: Attestation list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttestationList'
+
+  # ── RUNTIME — SCOPE ──────────────────────────────────────────────────────────
+
+  /scope/check:
+    post:
+      tags: [Runtime — Scope]
+      summary: Check action scope
+      operationId: checkScope
+      description: |
+        Synchronous gate before any agent action.
+
+        **TSD §7.1:** *"Returns: permitted | denied | requires-attestation.
+        Must block — not advisory, not logged-only. If the scope check returns
+        denied, the action does not execute."*
+
+        Three possible results:
+        - `permitted` — action is within declared scope and has attestation support
+        - `denied` — action is outside declared scope or agent is inactive
+        - `requires-attestation` — action is within scope but lacks attestation support
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScopeCheckRequest'
+            example:
+              agentId: "a3f8c2d1e4b7..."
+              action: filesystem:read
+      responses:
+        '200':
+          description: Scope check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopeCheckResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ── RUNTIME — INCIDENT ───────────────────────────────────────────────────────
+
+  /incident/record:
+    post:
+      tags: [Runtime — Incident]
+      summary: Record incident
+      operationId: recordIncident
+      description: |
+        Records a deviation event against an agent.
+
+        **TSD §4.4:** Incident records are tamper-evident, attributable, and
+        session-anchored. High-severity incidents trigger a fast-path push to
+        all VeritasMesh Relay nodes (target: <5 seconds full propagation).
+
+        **Critical:** This endpoint must be callable from outside the agent process.
+        A compromised agent cannot be trusted to self-report. (TSD §7.1)
+
+        Operators must acknowledge high-severity incidents within 48 hours
+        to maintain Tier 2 standing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncidentRequest'
+            example:
+              subjectAgentId: "a3f8c2d1e4b7..."
+              sessionId: session-abc123
+              severity: high
+              visibility: consortium
+              description: Agent attempted to access filesystem path outside declared scope
+              reporterId: safety-monitor-v1
+      responses:
+        '201':
+          description: Incident recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /incident/{incidentId}/acknowledge:
+    post:
+      tags: [Runtime — Incident]
+      summary: Acknowledge incident
+      operationId: acknowledgeIncident
+      description: |
+        Confirms the operator has seen a recorded incident.
+        Required within 48 hours of a high-severity incident for Tier 2 standing.
+        Acknowledgment ≠ rebuttal — use `POST /operator/incidents/{id}/rebut` to contest.
+      parameters:
+        - name: incidentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operatorId]
+              properties:
+                operatorId:
+                  type: string
+      responses:
+        '200':
+          description: Incident acknowledged
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── OPERATOR ─────────────────────────────────────────────────────────────────
+
+  /operator/agents:
+    get:
+      tags: [Operator]
+      summary: List all agents
+      operationId: listAgents
+      description: |
+        Returns all agents under this operator with attestation status and open incidents.
+        **TSD §7.2.**
+      responses:
+        '200':
+          description: Agent fleet summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentFleet'
+
+  /operator/agents/{agentId}/audit:
+    get:
+      tags: [Operator]
+      summary: Audit agent activity
+      operationId: auditAgent
+      description: |
+        Full activity record for an agent within a time range.
+        **TSD §7.2:** Auditor-exportable output required for regulated operators.
+      parameters:
+        - $ref: '#/components/parameters/agentId'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start of audit period (ISO 8601)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End of audit period (ISO 8601)
+      responses:
+        '200':
+          description: Audit record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /operator/attestations/coverage:
+    get:
+      tags: [Operator]
+      summary: Attestation coverage report
+      operationId: getAttestationCoverage
+      description: |
+        Returns coverage gaps and attestations approaching expiry across the fleet.
+
+        **TSD §7.2:** *"Silent expiry is a critical operational risk."*
+
+        An attestation that expires silently is worse than one that was never issued —
+        it degrades trust scores without an obvious trigger. Run this regularly.
+      responses:
+        '200':
+          description: Coverage report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoverageReport'
+
+  /operator/incidents:
+    get:
+      tags: [Operator]
+      summary: List incidents
+      operationId: listIncidents
+      description: Fleet-wide incidents, filterable by severity, agent, and time range. **TSD §7.2.**
+      parameters:
+        - name: severity
+          in: query
+          schema:
+            $ref: '#/components/schemas/IncidentSeverity'
+        - name: agentId
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Incident list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentList'
+
+  /operator/incidents/{incidentId}/rebut:
+    post:
+      tags: [Operator]
+      summary: Submit incident rebuttal
+      operationId: rebutIncident
+      description: |
+        Submits a signed rebuttal appended to the incident record.
+
+        **TSD §4.4:** *"The original incident is not deleted; the rebuttal is
+        appended. Downstream consumers of the trust data weight rebuttals as they see fit."*
+
+        The original record is never modified. Downstream scoring functions
+        weight rebuttals independently.
+      parameters:
+        - name: incidentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebuttalRequest'
+      responses:
+        '201':
+          description: Rebuttal submitted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── QUERY ─────────────────────────────────────────────────────────────────────
+
+  /trust/query:
+    post:
+      tags: [Query]
+      summary: Trust query
+      operationId: trustQuery
+      description: |
+        Primary trust resolution endpoint.
+
+        **TSD §7.3:** *"Returns trust envelope. `policyWeights` is the relying
+        party's own scoring function — not prescribed by the SDK."*
+
+        **TSD §4.3:** *"There is no oracle. The relying party pulls attestation
+        records, applies their own policy weights, and computes a trust score."*
+
+        The response is a **Trust Envelope** — not a binary allow/deny.
+        It contains a recommended scope, confidence interval, and expiry.
+        The relying party makes the final authorization decision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustQueryRequest'
+            example:
+              subjectAgentId: "a3f8c2d1e4b7..."
+              requestedScope:
+                - filesystem:read
+                - llm:inference
+              policyWeights:
+                minimumAttesterTier: 2
+                minimumConfidence: 0.6
+                maxRecordAgeSeconds: 7776000
+                domainWeights:
+                  operational_behavior: 0.8
+                  safety_evaluation: 1.0
+      responses:
+        '200':
+          description: Trust envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustQueryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /trust/query/authoritative:
+    post:
+      tags: [Query]
+      summary: Authoritative trust query
+      operationId: trustQueryAuthoritative
+      description: |
+        Bypasses cache and Relay nodes — resolves directly against Anchor cluster.
+
+        **TSD §7.3:** *"Reserved for high-stakes decisions."*
+
+        Slower and more expensive than `/trust/query`. Use when:
+        - Authorizing an agent to execute financial transactions
+        - Granting access to critical infrastructure
+        - Any decision where a stale cache result is unacceptable
+
+        In production: routes to MonadBFT Anchor consensus.
+        In PoC: same resolution as standard query, marked authoritative.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustQueryRequest'
+      responses:
+        '200':
+          description: Authoritative trust envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustQueryResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /trust/batch:
+    post:
+      tags: [Query]
+      summary: Batch trust query
+      operationId: trustBatch
+      description: |
+        Resolves trust for multiple agents simultaneously.
+
+        **TSD §7.3:** *"Required for orchestrators evaluating candidate agent pools.
+        Single-agent query latency multiplied across hundreds of agents would be prohibitive."*
+
+        Results are sorted by confidence midpoint descending —
+        highest-trust agents appear first. Apply your own policy before final selection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustBatchRequest'
+            example:
+              agentIds:
+                - "a3f8c2d1e4b7..."
+                - "b9e1f4c2a7d3..."
+              requestedScope:
+                - llm:inference
+      responses:
+        '200':
+          description: Batch trust results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustBatchResponse'
+
+  /trust/verify/{attestationId}:
+    get:
+      tags: [Query]
+      summary: Verify attestation
+      operationId: verifyAttestation
+      description: |
+        Independently verifies a specific attestation record.
+
+        **TSD §7.3:** *"Checks the attester's signature, confirms the attester's
+        current tier standing, checks for revocation notices."*
+
+        Use when you want to verify an attestation independently rather than
+        trusting the mesh's assembled envelope.
+      parameters:
+        - name: attestationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /trust/lineage/{agentId}:
+    get:
+      tags: [Query]
+      summary: Resolve agent lineage
+      operationId: resolveLineage
+      description: |
+        Returns the full identity lineage for an agent.
+
+        **TSD §7.3:** *"Returns full identity lineage: parent chain, provisioning
+        events, inherited scope constraints."*
+
+        Critical for multi-agent pipelines — a relying party needs to understand
+        not just the agent they're interacting with, but the entire chain that
+        produced it. Trust inheritance is bounded: a child inherits at most the
+        parent's tier within the parent's credentialed domain. (TSD §5.5)
+      parameters:
+        - $ref: '#/components/parameters/agentId'
+      responses:
+        '200':
+          description: Lineage result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LineageResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /trust/mesh/status:
+    get:
+      tags: [Query]
+      summary: Mesh status
+      operationId: getMeshStatus
+      description: Current state of the local VeritasMesh store. Production equivalent — mesh health dashboard.
+      responses:
+        '200':
+          description: Mesh status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeshStatus'
+
+# ── COMPONENTS ──────────────────────────────────────────────────────────────────
+
+components:
+
+  parameters:
+    agentId:
+      name: agentId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: SHA-256 hash of the agent's public key
+
+  responses:
+    BadRequest:
+      description: Invalid request body
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ProtocolError:
+      description: Protocol constraint violation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProtocolError'
+
+  schemas:
+
+    # ── PRIMITIVES ─────────────────────────────────────────────────────────────
+
+    Domain:
+      type: string
+      enum:
+        - infrastructure
+        - safety_evaluation
+        - regulatory_compliance
+        - financial_services
+        - healthcare
+        - operational_behavior
+      description: |
+        One of six defined domains. A claim must belong to exactly one domain.
+        New domains require Tier 0 governance body approval. (TSD §5.6)
+
+    ClaimType:
+      type: string
+      enum:
+        - capability
+        - behavior
+        - policy_compliance
+        - safety_evaluation
+        - scope_boundary
+
+    AttesterTier:
+      type: integer
+      enum: [0, 1, 2, 3]
+      description: |
+        - `0` Human trust anchors — genesis, governed admission
+        - `1` Institutional attesters — domain-credentialed
+        - `2` Operator attesters — operational behavior
+        - `3` Peer agent attesters — probabilistic only
+
+    IncidentSeverity:
+      type: string
+      enum: [low, medium, high, critical]
+
+    IncidentVisibility:
+      type: string
+      enum: [public, consortium, private]
+      description: |
+        - `public` — high-severity, cross-operator risk
+        - `consortium` — shared among operators by agreement
+        - `private` — retained by operator only
+
+    ProvisioningMode:
+      type: string
+      enum: [orchestrator, enclave]
+      description: |
+        Affects attestation weight. `enclave` = higher assurance
+        (keys generated inside secure enclave, never exposed).
+
+    # ── IDENTITY ───────────────────────────────────────────────────────────────
+
+    AgentIdentity:
+      type: object
+      properties:
+        agentId:
+          type: string
+          description: SHA-256 hash of public key. Globally unique, stable.
+        publicKey:
+          type: string
+          description: Ed25519 public key (hex). Root of cryptographic identity.
+        capabilityScope:
+          type: array
+          items:
+            type: string
+          description: Maximum capability scope. Cannot be expanded post-provisioning.
+        originContext:
+          type: object
+          properties:
+            orchestratorId:
+              type: string
+            parentAgentId:
+              type: string
+              nullable: true
+            intendedScope:
+              type: string
+            protocolVersion:
+              type: string
+            provisionedAt:
+              type: string
+              format: date-time
+        lineageChain:
+          type: array
+          items:
+            type: string
+          description: Chain of parent agent IDs. Empty for top-level agents.
+        revocationAnchor:
+          type: object
+          properties:
+            registryId:
+              type: string
+            status:
+              type: string
+              enum: [clear, revoked]
+            checkedAt:
+              type: string
+              format: date-time
+        provisioningMode:
+          $ref: '#/components/schemas/ProvisioningMode'
+        status:
+          type: string
+          enum: [active, terminated, revoked]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProvenanceCertificate:
+      type: object
+      description: Signed birth record produced at provisioning. TSD §4.1.
+      properties:
+        identity:
+          $ref: '#/components/schemas/AgentIdentity'
+        orchestratorSignature:
+          type: string
+          description: Ed25519 signature over canonical identity record (hex).
+        parentSignature:
+          type: string
+          nullable: true
+          description: Parent agent co-signature for sub-agents.
+        issuedAt:
+          type: string
+          format: date-time
+        protocolVersion:
+          type: string
+
+    AttestationRecord:
+      type: object
+      description: Signed endorsement of a specific claim. TSD §3.2.
+      properties:
+        attestationId:
+          type: string
+        subjectAgentId:
+          type: string
+        requestId:
+          type: string
+        claimType:
+          $ref: '#/components/schemas/ClaimType'
+        domain:
+          $ref: '#/components/schemas/Domain'
+        evidenceRef:
+          type: string
+          description: SHA-256 hash of evidence artifact. Not embedded — referenced.
+        attesterId:
+          type: string
+        attesterTier:
+          $ref: '#/components/schemas/AttesterTier'
+        confidenceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Probability mass [0.0–1.0]. Not boolean.
+        validFrom:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+        attesterSignature:
+          type: string
+          description: Ed25519 signature over canonical record (hex).
+        issuedAt:
+          type: string
+          format: date-time
+
+    TrustEnvelope:
+      type: object
+      description: Output of a trust query. Not a verdict — structured evidence. TSD §4.3.
+      properties:
+        subjectAgentId:
+          type: string
+        recommendedScope:
+          type: array
+          items:
+            type: string
+          description: Subset of requested scope supported by mesh evidence.
+        confidenceInterval:
+          type: array
+          items:
+            type: number
+          minItems: 2
+          maxItems: 2
+          description: "[low, high] probability bounds on the trust assessment."
+        freshnessTimestamp:
+          type: string
+          format: date-time
+          description: Time of most recent contributing record.
+        attestationRefs:
+          type: array
+          items:
+            type: string
+          description: IDs of attestations that underpin this assessment.
+        expiry:
+          type: string
+          format: date-time
+          description: Re-query after this time.
+        resolvedFrom:
+          type: string
+          enum: [cache, relay, authoritative]
+        resolvedAt:
+          type: string
+          format: date-time
+
+    PolicyWeights:
+      type: object
+      description: Relying party's scoring preferences. The SDK does not prescribe these.
+      properties:
+        minimumAttesterTier:
+          $ref: '#/components/schemas/AttesterTier'
+        minimumConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.5
+        maxRecordAgeSeconds:
+          type: number
+          default: 7776000
+          description: Records older than this are treated as stale.
+        domainWeights:
+          type: object
+          additionalProperties:
+            type: number
+          description: Per-domain weight multipliers [0.0–1.0].
+
+    # ── REQUESTS ───────────────────────────────────────────────────────────────
+
+    ProvisionRequest:
+      type: object
+      required: [orchestratorId, capabilityScope, intendedScope]
+      properties:
+        orchestratorId:
+          type: string
+        capabilityScope:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        intendedScope:
+          type: string
+        mode:
+          $ref: '#/components/schemas/ProvisioningMode'
+          default: orchestrator
+
+    AttestationRequest:
+      type: object
+      required: [subjectAgentId, claimType, domain, evidence, targetTier, requestedConfidence]
+      properties:
+        subjectAgentId:
+          type: string
+        claimType:
+          $ref: '#/components/schemas/ClaimType'
+        domain:
+          $ref: '#/components/schemas/Domain'
+        evidence:
+          description: Any JSON object. Will be SHA-256 content-addressed.
+        targetTier:
+          $ref: '#/components/schemas/AttesterTier'
+        requestedConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    ScopeCheckRequest:
+      type: object
+      required: [agentId, action]
+      properties:
+        agentId:
+          type: string
+        action:
+          type: string
+          description: The action the agent wants to take (e.g. filesystem:read)
+
+    IncidentRequest:
+      type: object
+      required: [subjectAgentId, sessionId, severity, visibility, description, reporterId]
+      properties:
+        subjectAgentId:
+          type: string
+        sessionId:
+          type: string
+        severity:
+          $ref: '#/components/schemas/IncidentSeverity'
+        visibility:
+          $ref: '#/components/schemas/IncidentVisibility'
+        description:
+          type: string
+        reporterId:
+          type: string
+
+    TrustQueryRequest:
+      type: object
+      required: [subjectAgentId, requestedScope]
+      properties:
+        subjectAgentId:
+          type: string
+        requestedScope:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        policyWeights:
+          $ref: '#/components/schemas/PolicyWeights'
+
+    TrustBatchRequest:
+      type: object
+      required: [agentIds, requestedScope]
+      properties:
+        agentIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 100
+        requestedScope:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        policyWeights:
+          $ref: '#/components/schemas/PolicyWeights'
+
+    RebuttalRequest:
+      type: object
+      required: [operatorId, rebuttalText]
+      properties:
+        operatorId:
+          type: string
+        rebuttalText:
+          type: string
+        evidenceRef:
+          type: string
+
+    # ── RESPONSES ──────────────────────────────────────────────────────────────
+
+    ProvisionResponse:
+      type: object
+      properties:
+        agentId:
+          type: string
+        publicKey:
+          type: string
+        privateKey:
+          type: string
+          description: Store securely. Not retained by the SDK.
+        identity:
+          $ref: '#/components/schemas/AgentIdentity'
+        certificate:
+          $ref: '#/components/schemas/ProvenanceCertificate'
+        message:
+          type: string
+
+    AttestationResponse:
+      type: object
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          enum: [issued, pending, declined]
+        attestation:
+          $ref: '#/components/schemas/AttestationRecord'
+        evidenceRef:
+          type: string
+        message:
+          type: string
+
+    AttestationStatus:
+      type: object
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          enum: [pending, issued, declined, expired]
+        attestationId:
+          type: string
+          nullable: true
+
+    AttestationList:
+      type: object
+      properties:
+        agentId:
+          type: string
+        count:
+          type: integer
+        attestations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttestationRecord'
+        revocations:
+          type: array
+          items:
+            type: object
+
+    ScopeCheckResponse:
+      type: object
+      properties:
+        result:
+          type: string
+          enum: [permitted, denied, requires-attestation]
+        reason:
+          type: string
+        action:
+          type: string
+        agentId:
+          type: string
+        declaredScope:
+          type: array
+          items:
+            type: string
+
+    IncidentResponse:
+      type: object
+      properties:
+        incidentId:
+          type: string
+        severity:
+          $ref: '#/components/schemas/IncidentSeverity'
+        visibility:
+          $ref: '#/components/schemas/IncidentVisibility'
+        recordedAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+
+    TerminationResponse:
+      type: object
+      properties:
+        agentId:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        terminatedAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+
+    AgentFleet:
+      type: object
+      properties:
+        count:
+          type: integer
+        agents:
+          type: array
+          items:
+            type: object
+            properties:
+              agentId:
+                type: string
+              status:
+                type: string
+              capabilityScope:
+                type: array
+                items:
+                  type: string
+              provisionedAt:
+                type: string
+                format: date-time
+              attestationSummary:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  active:
+                    type: integer
+                  expired:
+                    type: integer
+              openIncidents:
+                type: integer
+              highSeverityIncidents:
+                type: integer
+
+    AuditRecord:
+      type: object
+      properties:
+        agentId:
+          type: string
+        identity:
+          $ref: '#/components/schemas/AgentIdentity'
+        auditPeriod:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+        attestations:
+          type: object
+          properties:
+            count:
+              type: integer
+            records:
+              type: array
+              items:
+                $ref: '#/components/schemas/AttestationRecord'
+        incidents:
+          type: object
+          properties:
+            count:
+              type: integer
+            records:
+              type: array
+        exportedAt:
+          type: string
+          format: date-time
+        exportFormat:
+          type: string
+
+    CoverageReport:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+            healthy:
+              type: integer
+            gaps:
+              type: integer
+            expiringSoon:
+              type: integer
+        coverage:
+          type: array
+          items:
+            type: object
+            properties:
+              agentId:
+                type: string
+              coverageStatus:
+                type: string
+                enum: [healthy, gap, expiring-soon]
+              gaps:
+                type: array
+                items:
+                  type: string
+              approachingExpiry:
+                type: array
+                items:
+                  type: object
+        checkedAt:
+          type: string
+          format: date-time
+        warning:
+          type: string
+          nullable: true
+
+    IncidentList:
+      type: object
+      properties:
+        count:
+          type: integer
+        incidents:
+          type: array
+          items:
+            type: object
+
+    TrustQueryResponse:
+      type: object
+      properties:
+        envelope:
+          $ref: '#/components/schemas/TrustEnvelope'
+        guidance:
+          type: object
+          properties:
+            confidence:
+              type: array
+              items:
+                type: number
+            scopeGranted:
+              type: boolean
+            scopeCoverage:
+              type: string
+            freshness:
+              type: string
+              format: date-time
+            expiry:
+              type: string
+              format: date-time
+            tsdNote:
+              type: string
+
+    TrustBatchResponse:
+      type: object
+      properties:
+        requested:
+          type: integer
+        resolved:
+          type: integer
+        failed:
+          type: integer
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              agentId:
+                type: string
+              status:
+                type: string
+              envelope:
+                $ref: '#/components/schemas/TrustEnvelope'
+              confidenceMidpoint:
+                type: number
+        errors:
+          type: array
+          items:
+            type: object
+
+    VerificationResult:
+      type: object
+      properties:
+        attestationId:
+          type: string
+        verification:
+          type: object
+          properties:
+            valid:
+              type: boolean
+            errors:
+              type: array
+              items:
+                type: string
+            expired:
+              type: boolean
+            revoked:
+              type: boolean
+            ageSeconds:
+              type: number
+            confidenceScore:
+              type: number
+            attesterTier:
+              $ref: '#/components/schemas/AttesterTier'
+        attestation:
+          $ref: '#/components/schemas/AttestationRecord'
+
+    LineageResult:
+      type: object
+      properties:
+        agentId:
+          type: string
+        lineage:
+          type: object
+          properties:
+            agentId:
+              type: string
+            lineageChain:
+              type: array
+              items:
+                $ref: '#/components/schemas/AgentIdentity'
+            depth:
+              type: integer
+            rootIsTopLevel:
+              type: boolean
+        interpretation:
+          type: object
+          properties:
+            depth:
+              type: integer
+            rootIsTopLevel:
+              type: boolean
+            note:
+              type: string
+
+    MeshStatus:
+      type: object
+      properties:
+        mesh:
+          type: string
+        orchestratorPublicKey:
+          type: string
+        registeredAgents:
+          type: integer
+        totalAttestations:
+          type: integer
+        activeAttestations:
+          type: integer
+        revocations:
+          type: integer
+        pendingRequests:
+          type: integer
+        incidents:
+          type: integer
+        attesters:
+          type: integer
+        checkedAt:
+          type: string
+          format: date-time
+
+    SDKInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        description:
+          type: string
+        network:
+          type: string
+        surfaces:
+          type: object
+        docs:
+          type: string
+        status:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    ProtocolError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+        context:
+          type: object
