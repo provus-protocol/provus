@@ -6,8 +6,10 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/edge.js",
-    "dev": "node --watch dist/edge.js"
+    "start:edge": "node dist/edge.js",
+    "start:relay": "node dist/relay/server.js",
+    "dev:edge": "node --watch dist/edge.js",
+    "dev:relay": "node --watch dist/relay/server.js"
   },
   "dependencies": {
     "@provus/core": "*",
