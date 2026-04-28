@@ -8,8 +8,10 @@
     "build": "tsc",
     "start:edge": "node dist/edge.js",
     "start:relay": "node dist/relay/server.js",
+    "start:anchor": "node dist/anchor/server.js",
     "dev:edge": "node --watch dist/edge.js",
     "dev:relay": "node --watch dist/relay/server.js"
+    "dev:anchor": "node --watch dist/anchor/server.js"
   },
   "dependencies": {
     "@provus/core": "*",
