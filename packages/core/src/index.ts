@@ -96,6 +96,36 @@ export type {
   AttestationVerificationResult,
 } from "./attestation.js";
 
+// ── REGISTRY ──────────────────────────────────────────────────────────────────
+export {
+  AttesterRegistry,
+  createGenesisRegistry,
+  TIER_CLAIM_PERMISSIONS,
+  TIER1_REQUIRED_DOMAINS,
+  CLAIM_MINIMUM_TIER,
+} from "./registry.js";
+
+export type {
+  AttesterRecord,
+  AttesterStatusEvent,
+  AuthorityCheckResult,
+} from "./registry.js";
+
+// ── ENFORCEMENT ───────────────────────────────────────────────────────────────
+export {
+  enforceAttestation,
+  enforceScopeInheritance,
+  applyGraphScoring,
+  propagateDemotion,
+  checkTier2Eligibility,
+} from "./enforcement.js";
+
+export type {
+  EnforcementResult,
+  GraphScoringResult,
+  ScopeInheritanceResult,
+} from "./enforcement.js";
+
 // ── TRUST ─────────────────────────────────────────────────────────────────────
 export {
   DEFAULT_POLICY_WEIGHTS,
