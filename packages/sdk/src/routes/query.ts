@@ -238,11 +238,11 @@ export async function queryRoutes(app: FastifyInstance) {
         });
       }
 
-      // Get the attester's public key
-      // In production: resolved from the attester's registered identity on VeritasMesh
-      // In PoC: resolved from our in-memory attester registry
-      const attesterKeypair = state.attesters.get(targetAttestation.attesterId);
-      if (!attesterKeypair) {
+      // Resolve attester keypair from RegisteredAttester array
+      const attesterEntry = state.attesters.find(
+        (a) => a.keypair.publicKey === targetAttestation.attesterId
+      );
+      if (!attesterEntry) {
         return reply.status(422).send({
           error: "Attester public key not found — cannot verify signature",
           attesterId: targetAttestation.attesterId,
@@ -252,7 +252,7 @@ export async function queryRoutes(app: FastifyInstance) {
 
       const result = await verifyAttestation(
         targetAttestation,
-        attesterKeypair.publicKey,
+        attesterEntry.keypair.publicKey,
         state.store.revocations
       );
 
@@ -335,7 +335,7 @@ export async function queryRoutes(app: FastifyInstance) {
       revocations: state.store.revocations.length,
       pendingRequests: state.pendingRequests.size,
       incidents: state.incidents.size,
-      attesters: state.attesters.size,
+      attesters: state.attesters.length,
       checkedAt: now(),
       note: "In production: Relay node health, Anchor quorum status, propagation latency.",
     });

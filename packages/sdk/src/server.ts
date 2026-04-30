@@ -13,6 +13,7 @@
  *   /trust/*      — query interface
  */
 
+import { versionPlugin, SDK_VERSION } from "./version.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { initState } from "./state.js";
@@ -35,11 +36,11 @@ async function buildServer() {
 
   // ── CORS ───────────────────────────────────────────────────────────────────
   await app.register(cors, { origin: true });
-
+  await app.register(versionPlugin);
   // ── HEALTH ─────────────────────────────────────────────────────────────────
   app.get("/", async () => ({
     name: "Provus SDK",
-    version: "0.1.0",
+    version: SDK_VERSION,
     description: "Agent identity, attestation & reputation protocol",
     network: "VeritasMesh (local PoC mode)",
     surfaces: {

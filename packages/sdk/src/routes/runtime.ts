@@ -26,13 +26,15 @@ import {
   terminate,
   createRequest,
   issue,
+  decline,
   registerIdentity,
   storeAttestation,
   contentAddress,
   generateId,
   now,
+  enforceAttestation,
 } from "@provus/core";
-import { getState, getDefaultAttester } from "../state.js";
+import { getState, getAttesterForRequest } from "../state.js";
 import {
   ProvisionBody,
   RotateBody,
@@ -70,6 +72,10 @@ export async function runtimeRoutes(app: FastifyInstance) {
 
     // Register in the mesh store — from this point the agent is visible
     registerIdentity(state.store, result.identity);
+
+    // Warm the scope cache immediately on provisioning
+    // TSD §7.4: scope.check must return in <10ms for cache-warm calls
+    state.scopeCache.set(result.identity.agentId, result.identity.capabilityScope);
 
     // Return the certificate and identity — private key goes to the caller
     // In production enclave mode: private key never leaves the enclave
@@ -147,6 +153,9 @@ export async function runtimeRoutes(app: FastifyInstance) {
     const terminated = { ...identity, status: "terminated" as const, updatedAt: now() };
     state.store.identities.set(req.params.agentId, terminated);
 
+    // Invalidate scope cache — terminated agent must not pass scope checks
+    state.scopeCache.invalidate(req.params.agentId);
+
     return reply.send({
       agentId: req.params.agentId,
       status: "terminated",
@@ -194,17 +203,79 @@ export async function runtimeRoutes(app: FastifyInstance) {
     // Store the pending request
     state.pendingRequests.set(request.requestId, request);
 
-    // PoC: auto-issue via default attester
-    // Production: this returns a pending request ID and the mesh routes it
-    const attester = getDefaultAttester(state);
+    // Route to best available attester using registry
+    // TSD §7.4: "Attestation routing — attester selection by tier and domain"
+    const attester = getAttesterForRequest(
+      state,
+      body.data.targetTier,
+      body.data.domain
+    );
+
+    if (!attester) {
+      // No attester available for this tier/domain combination
+      // TSD §5.5 ④: "Domain gaps surface explicitly — no silent fallback"
+      const declineRecord = await decline(
+        request,
+        state.orchestrator.publicKey,
+        state.orchestrator.privateKey,
+        "attester_unavailable",
+        `No credentialed attester available for Tier ${body.data.targetTier} ` +
+        `in domain '${body.data.domain}'. ` +
+        `TSD §5.5 ④: domain gaps surface explicitly.`
+      );
+      return reply.status(422).send({
+        requestId: request.requestId,
+        status: "declined",
+        declineRecord,
+        tsdRef: "TSD §5.5 ④ — domain gaps surface explicitly, no silent fallback",
+      });
+    }
+
+    // Enforce tier authority before issuing
+    // TSD §4.2: "Relay nodes validate the attester signature and confirm
+    // the attester's current tier standing before writing the record."
+    const preCheck = state.registry.checkAuthority(
+      attester.keypair.publicKey,
+      body.data.claimType,
+      body.data.domain
+    );
+
+    if (!preCheck.authorized) {
+      const declineRecord = await decline(
+        request,
+        attester.keypair.publicKey,
+        attester.keypair.privateKey,
+        "out_of_domain",
+        preCheck.reason
+      );
+      return reply.status(422).send({
+        requestId: request.requestId,
+        status: "declined",
+        declineRecord,
+        enforcementReason: preCheck.reason,
+        tsdRef: preCheck.tsdRef,
+      });
+    }
+
     const attestation = await issue({
       request,
-      attesterId: attester.publicKey,
-      attesterTier: 2,
+      attesterId: attester.keypair.publicKey,
+      attesterTier: attester.tier,
       confidenceScore: Math.min(body.data.requestedConfidence, 0.85),
-      validForSeconds: 90 * 24 * 60 * 60, // 90 days
-      attesterPrivateKey: attester.privateKey,
+      validForSeconds: 90 * 24 * 60 * 60,
+      attesterPrivateKey: attester.keypair.privateKey,
     });
+
+    // Final enforcement check on the issued record
+    const enforcement = enforceAttestation(attestation, state.registry);
+    if (!enforcement.allowed) {
+      return reply.status(422).send({
+        requestId: request.requestId,
+        status: "declined",
+        enforcementReason: enforcement.reason,
+        tsdRef: enforcement.tsdRef,
+      });
+    }
 
     storeAttestation(state.store, attestation);
 
@@ -213,7 +284,13 @@ export async function runtimeRoutes(app: FastifyInstance) {
       status: "issued",
       attestation,
       evidenceRef: request.evidenceRef,
-      message: "Attestation issued. In production this routes to a credentialed VeritasMesh attester.",
+      attesterTier: attester.tier,
+      attesterName: attester.name,
+      enforcement: {
+        tierVerified: true,
+        domainVerified: true,
+        effectiveTier: enforcement.effectiveTier,
+      },
     });
   });
 
@@ -267,31 +344,85 @@ export async function runtimeRoutes(app: FastifyInstance) {
    * TSD §7.1: "Synchronous gate before any agent action.
    * Returns: permitted | denied | requires-attestation.
    * Must block — not advisory, not logged-only."
+   *
+   * TSD §7.4: "scope.check must return in <10ms for a cache-warm call."
+   * Hot path: cache hit → no store read, returns in <1ms.
    */
   app.post("/scope/check", async (req, reply) => {
+    const checkStart = Date.now();
     const body = ScopeCheckBody.safeParse(req.body);
     if (!body.success) {
       return reply.status(400).send({ error: "Invalid request", issues: body.error.issues });
     }
 
     const state = getState();
+
+    // ── HOT PATH: scope cache ─────────────────────────────────────────────
+    // Cache hit: return in <1ms without touching the identity store
+    const cachedScope = state.scopeCache.get(body.data.agentId);
+
+    if (cachedScope) {
+      const actionInScope = cachedScope.some(
+        (cap) => body.data.action.startsWith(cap) || cap === body.data.action
+      );
+
+      if (!actionInScope) {
+        return reply.send({
+          result: "denied",
+          reason: "Action outside declared capability scope",
+          action: body.data.action,
+          source: "cache",
+          latencyMs: Date.now() - checkStart,
+        });
+      }
+
+      // Scope permitted from cache — still check attestation support
+      const attestations = state.store.attestations.get(body.data.agentId) ?? [];
+      const hasAttestation = attestations.some(
+        (a) => a.claimType === "capability" || a.claimType === "behavior"
+      );
+
+      return reply.send({
+        result: hasAttestation ? "permitted" : "requires-attestation",
+        action: body.data.action,
+        agentId: body.data.agentId,
+        source: "cache",
+        latencyMs: Date.now() - checkStart,
+        ...(hasAttestation ? {} : {
+          reason: "No attestation found. Request attestation before proceeding.",
+        }),
+      });
+    }
+
+    // ── COLD PATH: store lookup + cache population ────────────────────────
     const identity = state.store.identities.get(body.data.agentId);
 
     if (!identity) {
-      return reply.send({ result: "denied", reason: "Agent not found" });
+      return reply.send({
+        result: "denied",
+        reason: "Agent not found",
+        source: "store",
+        latencyMs: Date.now() - checkStart,
+      });
     }
 
     if (identity.status !== "active") {
+      // Invalidate cache entry if agent is no longer active
+      state.scopeCache.invalidate(body.data.agentId);
       return reply.send({
         result: "denied",
         reason: `Agent is ${identity.status}`,
         agentId: body.data.agentId,
+        source: "store",
+        latencyMs: Date.now() - checkStart,
       });
     }
 
-    // Check if the action falls within the agent's provisioned capability scope
-    const actionInScope = identity.capabilityScope.some((cap) =>
-      body.data.action.startsWith(cap) || cap === body.data.action
+    // Warm the cache for next call
+    state.scopeCache.set(body.data.agentId, identity.capabilityScope);
+
+    const actionInScope = identity.capabilityScope.some(
+      (cap) => body.data.action.startsWith(cap) || cap === body.data.action
     );
 
     if (!actionInScope) {
@@ -300,27 +431,25 @@ export async function runtimeRoutes(app: FastifyInstance) {
         reason: "Action outside declared capability scope",
         action: body.data.action,
         declaredScope: identity.capabilityScope,
+        source: "store",
+        latencyMs: Date.now() - checkStart,
       });
     }
 
-    // Check if there's attestation support for this action
     const attestations = state.store.attestations.get(body.data.agentId) ?? [];
     const hasAttestation = attestations.some(
       (a) => a.claimType === "capability" || a.claimType === "behavior"
     );
 
-    if (!hasAttestation) {
-      return reply.send({
-        result: "requires-attestation",
-        reason: "No attestation found for this capability. Request attestation before proceeding.",
-        action: body.data.action,
-      });
-    }
-
     return reply.send({
-      result: "permitted",
+      result: hasAttestation ? "permitted" : "requires-attestation",
       action: body.data.action,
       agentId: body.data.agentId,
+      source: "store",
+      latencyMs: Date.now() - checkStart,
+      ...(hasAttestation ? {} : {
+        reason: "No attestation found. Request attestation before proceeding.",
+      }),
     });
   });
 
