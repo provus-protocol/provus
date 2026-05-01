@@ -35,6 +35,7 @@ import {
   enforceAttestation,
 } from "@provus/core";
 import { getState, getAttesterForRequest } from "../state.js";
+import { getBillingTracker } from "../billing.js";
 import {
   ProvisionBody,
   RotateBody,
@@ -278,6 +279,12 @@ export async function runtimeRoutes(app: FastifyInstance) {
     }
 
     storeAttestation(state.store, attestation);
+
+    // Record billing event — Phase 1: tracking only
+    getBillingTracker().record("sdk-operator", "attestation_issued", {
+      domain: body.data.domain,
+      attesterTier: attester.tier,
+    });
 
     return reply.status(201).send({
       requestId: request.requestId,

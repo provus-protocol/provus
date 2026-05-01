@@ -22,6 +22,7 @@ import {
   type TrustQuery,
 } from "@provus/core";
 import { getState } from "../state.js";
+import { getBillingTracker } from "../billing.js";
 import {
   TrustQueryBody,
   TrustBatchBody,
@@ -64,6 +65,7 @@ export async function queryRoutes(app: FastifyInstance) {
 
     try {
       const envelope = resolveQuery(query, state.store);
+      getBillingTracker().record("sdk-operator", "trust_query_standard");
       return reply.send({
         envelope,
         // Decision guidance — the relying party makes the final call
@@ -336,6 +338,7 @@ export async function queryRoutes(app: FastifyInstance) {
       pendingRequests: state.pendingRequests.size,
       incidents: state.incidents.size,
       attesters: state.attesters.length,
+      billing: getBillingTracker().getTreasurySummary(),
       checkedAt: now(),
       note: "In production: Relay node health, Anchor quorum status, propagation latency.",
     });

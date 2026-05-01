@@ -96,6 +96,22 @@ export type {
   AttestationVerificationResult,
 } from "./attestation.js";
 
+// ── CONSORTIUM ────────────────────────────────────────────────────────────────
+export {
+  createConsortiumAgreement,
+  verifyConsortiumAgreement,
+  GovernanceCouncil,
+  conductAdmissionCeremony,
+} from "./consortium.js";
+
+export type {
+  ConsortiumAgreement,
+  GovernanceProposal,
+  GovernanceSignature,
+  GovernanceActionType,
+  AdmissionCeremonyRecord,
+} from "./consortium.js";
+
 // ── REGISTRY ──────────────────────────────────────────────────────────────────
 export {
   AttesterRegistry,
