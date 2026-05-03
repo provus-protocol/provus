@@ -94,19 +94,61 @@ The full Technical Specification Document (TSD v0.1) is available in `docs/archi
 
 ## Status
 
-**v0.1.0 — Architecture and core primitives.**
+**v1.0.0 — Full protocol stack implemented.**
 
-- [x] Data model (types, canonical serialization)
-- [x] Cryptographic primitives (Ed25519 identity, SHA-256 content addressing)
-- [x] Identity lifecycle (provision, rotate, terminate)
-- [x] Attestation flow (request, issue, decline, revoke, verify)
-- [x] Trust query engine (local resolution, trust envelope, lineage)
-- [x] End-to-end demo
-- [ ] SDK surface (runtime, operator, query interfaces over HTTP)
-- [ ] VeritasMesh node implementation (Edge, Relay, Anchor)
-- [ ] Attester tier enforcement
-- [ ] Monad anchor consensus integration
-- [ ] Genesis attester consortium
+- [x] Data model — types, canonical serialization, trust assumptions
+- [x] Cryptographic primitives — Ed25519 identity, SHA-256 content addressing
+- [x] Identity lifecycle — provision, rotate, terminate
+- [x] Attestation flow — request, issue, decline, revoke, verify
+- [x] Trust query engine — local resolution, trust envelope, lineage
+- [x] SDK — 18 HTTP endpoints, OpenAPI spec, Postman collection
+- [x] VeritasMesh Edge node — persistent store, heartbeat, submission queue
+- [x] VeritasMesh Relay node — domain store, propagation, revocation fast path
+- [x] VeritasMesh Anchor node — authoritative ledger, threshold consensus
+- [x] Attester tier enforcement — registry, domain binding, anti-collusion scoring
+- [x] SDK hardening — scope cache, registry routing, versioning
+- [x] Consortium tooling — signed agreements, multi-sig governance, admission ceremony
+- [x] Billing — usage tracking, Phase 1 active, Phase 2 ready
+- [ ] MonadBFT consensus integration
+- [ ] Genesis attester consortium — seeking founding Tier 0 members (see below)
+- [ ] VeritasMesh mainnet
+
+---
+
+## Genesis Attester Consortium
+
+Provus needs a small number of founding **Tier 0 attesters** — human-operated,
+institutionally accountable parties whose attestations seed the entire trust graph.
+
+**What Tier 0 means in practice:**
+
+- Run a VeritasMesh Anchor node (lightweight, documented — `packages/node/src/anchor/`)
+- Sign a consortium agreement (cryptographically attributable commitment — `packages/core/src/consortium.ts`)
+- Participate in governance votes within 72 hours when called
+- Maintain your keypair securely (HSM recommended)
+
+**What you get:**
+
+- Named co-founder of a trust standard for the autonomous agent era
+- Founding token allocation (governance rights, vested 3yr / 1yr cliff)
+- First-mover positioning as the trust infrastructure layer becomes mandatory
+- A seat on the Tier 0 governance council with real protocol decision-making authority
+
+**Who we are looking for:**
+
+- AI safety evaluation organizations (your evals become cryptographically anchored attestations)
+- Blockchain infrastructure projects with protocol trust expertise (EAS, cheqd, DID/VC builders)
+- Regulated enterprise operators facing AI compliance pressure
+- Technical builders who have shipped real infrastructure and have reputation at stake
+
+**To express interest:**
+
+Open a [GitHub Discussion](https://github.com/provus-protocol/provus/discussions) titled
+`Genesis Attester — [your organization]` or email `hello@devajibola.me` with subject
+`Provus genesis attester — [your organization]`.
+
+The consortium agreement format, governance structure, and admission ceremony are all
+implemented and documented. The conversation can move as fast as you can.
 
 ---
 
@@ -114,8 +156,12 @@ The full Technical Specification Document (TSD v0.1) is available in `docs/archi
 
 Building the trust infrastructure layer for the agent era.
 
-For genesis attester enquiries, technical collaboration, or funding conversations,
-open an issue or see [CONTRIBUTING.md](./CONTRIBUTING.md).
+- **Genesis attester enquiries:** `hello@devajibola.me`
+- **Technical collaboration:** open an issue or discussion on GitHub
+- **Funding conversations:** `hello@devajibola.me`
+- **X:** follow the build at [@ajibola_dev](https://x.com/ajibola_dev)
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and [SECURITY.md](./SECURITY.md).
 
 ---
 
@@ -125,4 +171,5 @@ MIT — see [LICENSE](./LICENSE).
 
 ---
 
-*Provus v0.1.0 — Early pre-release. Architecture and core primitives.*
+*Provus Protocol — building the trust infrastructure layer for the agent era.*
+*github.com/provus-protocol/provus*
